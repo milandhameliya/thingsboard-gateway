@@ -74,6 +74,7 @@ class TBUtility:
 
     @staticmethod
     def check_and_import(extension_type, module_name):
+        log.debug("Looking for extension_type=" + extension_type + ", module_name=" + module_name)
         if TBUtility.loaded_extensions.get(extension_type + module_name) is None:
             if system() == "Windows":
                 extensions_paths = [path.abspath(path.dirname(path.dirname(__file__)) + '/connectors/'.replace('/', path.sep) + extension_type.lower()),

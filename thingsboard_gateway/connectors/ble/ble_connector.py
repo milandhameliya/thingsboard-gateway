@@ -202,6 +202,7 @@ class BLEConnector(Connector, Thread):
                     for service in services:
                         if self.__devices_around[device].get('services') is None:
                             log.debug('Building device %s map, it may take a time, please wait...', device)
+                            self.__devices_around[device]['log_device_map'] = True
                             self.__devices_around[device]['services'] = {}
                         service_uuid = str(service.uuid).upper()
                         if self.__devices_around[device]['services'].get(service_uuid) is None:
@@ -246,6 +247,15 @@ class BLEConnector(Connector, Thread):
                                         'characteristic': characteristic,
                                         'handle': characteristic.handle}
 
+                    for device in self.__devices_around:
+                        if self.__devices_around[device]['log_device_map']:
+                            self.__devices_around[device]['log_device_map'] = False
+                            log.debug('# Device : ' + device)
+                            for service in self.__devices_around[device]['services']:
+                                log.debug(' > Service {' + service + '}')
+                                for char_uuid in self.__devices_around[device]['services'][service]:
+                                    log.debug('   > Char {' + char_uuid + '}')
+
                     if self.__devices_around[device]['is_new_device']:
                         log.debug('New device %s - processing.', device)
                         self.__devices_around[device]['is_new_device'] = False
@@ -256,7 +266,9 @@ class BLEConnector(Connector, Thread):
                             converter = section['converter']
                             converted_data = converter.convert(section, data)
                             self.statistics['MessagesReceived'] = self.statistics['MessagesReceived'] + 1
+                            # log.debug('Received data for charactoristic {' + interest_char + '}:')
                             log.debug(data)
+                            # log.debug('Converted data:')
                             log.debug(converted_data)
                             self.__gateway.send_to_storage(self.get_name(), converted_data)
                             self.statistics['MessagesSent'] = self.statistics['MessagesSent'] + 1
@@ -331,11 +343,11 @@ class BLEConnector(Connector, Thread):
         return delegate
 
     def __service_processing(self, device, characteristic_processing_conf):
+        characteristic_uuid_from_config = characteristic_processing_conf.get('characteristicUUID')
+        if characteristic_uuid_from_config is None:
+            log.error('Characteristic not found in config: %s', pformat(characteristic_processing_conf))
+            return None
         for service in self.__devices_around[device]['services']:
-            characteristic_uuid_from_config = characteristic_processing_conf.get('characteristicUUID')
-            if characteristic_uuid_from_config is None:
-                log.error('Characteristic not found in config: %s', pformat(characteristic_processing_conf))
-                return None
             if self.__devices_around[device]['services'][service].get(characteristic_uuid_from_config) is None:
                 continue
             characteristic = self.__devices_around[device]['services'][service][characteristic_uuid_from_config][
@@ -410,6 +422,7 @@ class BLEConnector(Connector, Thread):
                 for key_type in keys_in_config:
                     for type_section in interest_device.get(key_type):
                         if type_section.get("characteristicUUID") is not None:
+                            type_section["characteristicUUID"] = type_section["characteristicUUID"].upper()
                             converter = None
                             if type_section.get('converter') is not None:
                                 try:
@@ -428,13 +441,13 @@ class BLEConnector(Connector, Thread):
                             else:
                                 converter = default_converter
                             if converter is not None:
-                                if interest_uuid.get(type_section["characteristicUUID"].upper()) is None:
-                                    interest_uuid[type_section["characteristicUUID"].upper()] = [
+                                if interest_uuid.get(type_section["characteristicUUID"]) is None:
+                                    interest_uuid[type_section["characteristicUUID"]] = [
                                         {'section_config': type_section,
                                          'type': key_type,
                                          'converter': converter}]
                                 else:
-                                    interest_uuid[type_section["characteristicUUID"].upper()].append(
+                                    interest_uuid[type_section["characteristicUUID"]].append(
                                         {'section_config': type_section,
                                          'type': key_type,
                                          'converter': converter})
