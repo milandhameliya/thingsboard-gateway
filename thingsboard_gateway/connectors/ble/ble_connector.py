@@ -13,6 +13,8 @@
 #     limitations under the License.
 
 import time
+import subprocess
+import sys
 from random import choice
 from pprint import pformat
 from threading import Thread
@@ -45,6 +47,12 @@ class BLEConnector(Connector, Thread):
             'checkIntervalSeconds') is not None else 10
         self.__rescan_time = self.__config['rescanIntervalSeconds'] if self.__config.get(
             'rescanIntervalSeconds') is not None else 10
+        self.__disconnect_after_use = self.__config['disconnectAfterUse'] if self.__config.get(
+            'disconnectAfterUse') is not None else False
+        self.__disconnect_before_scan = self.__config['disconnectBeforeScan'] if self.__config.get(
+            'disconnectBeforeScan') is not None else False
+        self.__disconnect_safe_wait = self.__config['disconnectSafeWaitSeconds'] if self.__config.get(
+            'disconnectSafeWaitSeconds') is not None else 0
         self.__previous_scan_time = time.time() - self.__rescan_time
         self.__previous_read_time = time.time() - self.__check_interval_seconds
         self.__scanner = Scanner().withDelegate(ScanDelegate(self))
@@ -77,7 +85,8 @@ class BLEConnector(Connector, Thread):
                     self.__devices_around[device]['peripheral'].disconnect()
             except Exception as e:
                 log.exception(e)
-                raise e
+                log.error("Unable to close the device. Further operations may fail. Try to restart or reconnect your BLE hardware.")
+                # raise e # Don't raise exception to avoid permanent blocking of the system!
 
     def get_name(self):
         return self.name
@@ -171,12 +180,12 @@ class BLEConnector(Connector, Thread):
         self.start()
 
     def device_add(self, device):
+        log.debug('Device with address: %s - found.', device.addr.upper())
         for interested_device in self.__devices_around:
             if device.addr.upper() == interested_device and self.__devices_around[interested_device].get(
                     'scanned_device') is None:
                 self.__devices_around[interested_device]['scanned_device'] = device
                 self.__devices_around[interested_device]['is_new_device'] = True
-            log.debug('Device with address: %s - found.', device.addr.upper())
 
     def __get_services_and_chars(self):
         for device in self.__devices_around:
@@ -247,14 +256,13 @@ class BLEConnector(Connector, Thread):
                                         'characteristic': characteristic,
                                         'handle': characteristic.handle}
 
-                    for device in self.__devices_around:
-                        if self.__devices_around[device]['log_device_map']:
-                            self.__devices_around[device]['log_device_map'] = False
-                            log.debug('# Device : ' + device)
-                            for service in self.__devices_around[device]['services']:
-                                log.debug(' > Service {' + service + '}')
-                                for char_uuid in self.__devices_around[device]['services'][service]:
-                                    log.debug('   > Char {' + char_uuid + '}')
+                    if self.__devices_around[device]['log_device_map']:
+                        self.__devices_around[device]['log_device_map'] = False
+                        log.debug('# Device : ' + device)
+                        for service in self.__devices_around[device]['services']:
+                            log.debug(' > Service {' + service + '}')
+                            for char_uuid in self.__devices_around[device]['services'][service]:
+                                log.debug('   > Char {' + char_uuid + '}')
 
                     if self.__devices_around[device]['is_new_device']:
                         log.debug('New device %s - processing.', device)
@@ -272,6 +280,15 @@ class BLEConnector(Connector, Thread):
                             log.debug(converted_data)
                             self.__gateway.send_to_storage(self.get_name(), converted_data)
                             self.statistics['MessagesSent'] = self.statistics['MessagesSent'] + 1
+
+                    if self.__disconnect_after_use and peripheral is not None:
+                        log.debug('Disconnecting ' + device)
+                        try:
+                            peripheral.disconnect()
+                        except Exception as e:
+                            log.debug('Unable to disconnect ' + device)
+                            log.exception(e)
+
             except BTLEDisconnectError:
                 log.debug('Connection lost. Device %s', device)
                 continue
@@ -391,7 +408,61 @@ class BLEConnector(Connector, Thread):
                 log.debug('data: %s', data)
             return data
 
+    def __reset_hardware(self):
+        if not sys.platform.startswith('linux'):
+            log.debug('Resetting BLE hardware is not yet implemented for OS other then Linux')
+            return
+        log.info('Resetting BLE hardware...')
+        devices = ''
+        try:
+            devices = subprocess.check_output(['hciconfig'], timeout=1, encoding='ascii')
+        except Exception as e:
+            log.error('Unable to get hardware list using hcitool command')
+            log.exception(e)
+
+        # === Sample output            
+        # pi@raspberrypi:/ $ hciconfig
+        # hci0:   Type: Primary  Bus: USB
+        #         BD Address: 00:00:00:00:00:00  ACL MTU: 0:0  SCO MTU: 0:0
+        #         DOWN
+        #         RX bytes:284 acl:0 sco:0 events:4 errors:0
+        #         TX bytes:15 acl:0 sco:0 commands:5 errors:0
+
+        devices = devices.split("\n")   # prepare all lines
+        devices = [d for d in devices if d and not d.startswith('\t')]  # consider lines which is not starting with <tab> (means it has device name)
+        devices = [d[:d.find(':')] for d in devices if d.find(':') >= 0]    # filter device name
+
+        if len(devices) > 0:
+            log.debug('"hciconfig" hardware found = %s', ', '.join(devices))
+            for device in devices:
+                try:
+                    reset_output = subprocess.check_output(['sudo', 'hciconfig', device, 'reset'], timeout=2, encoding='ascii')
+                    log.info('BLE hardware "%s" reset successfully', device)
+                except Exception as e:
+                    log.error('Failed to reset hardware "%s"', device)
+                    log.exception(e)
+        else:
+            log.debug('No hardware detected!')
+
     def __scan_ble(self):
+        if self.__disconnect_before_scan:
+            log.debug("Disconnect devices before scanning...")
+            disconnect_invoked = False
+            for device in self.__devices_around:
+                if self.__devices_around[device].get('peripheral') is not None:
+                    peripheral = self.__devices_around[device]['peripheral']
+                    if peripheral is not None:
+                        log.debug('Disconnecting ' + device)
+                        try:
+                            peripheral.disconnect()
+                            disconnect_invoked = True
+                        except Exception as e:
+                            log.debug('Unable to disconnect ' + device)
+                            log.exception(e)
+            if disconnect_invoked and self.__disconnect_safe_wait > 0:
+                log.debug('Waiting for %d seconds to disconnect safely...', self.__disconnect_safe_wait)
+                time.sleep(self.__disconnect_safe_wait)
+
         log.debug("Scanning for devices...")
         try:
             self.__scanner.scan(self.__config.get('scanTimeSeconds', 5),
@@ -404,10 +475,12 @@ class BLEConnector(Connector, Thread):
                       '\nCommand above - provided access to ble devices to any user.'
                       '\n========================', str(bluepy_path[0] + '/bluepy-helper'))
             self._connected = False
-            raise e
+            log.error("Unable to scan devices. Further operations may fail. Try to restart or reconnect your BLE hardware.")
+            self.__reset_hardware()
+            # raise e # Don't raise exception to avoid permanent blocking of the system!
         except Exception as e:
             log.exception(e)
-            time.sleep(10)
+            self.__reset_hardware()
 
     def __fill_interest_devices(self):
         if self.__config.get('devices') is None:
