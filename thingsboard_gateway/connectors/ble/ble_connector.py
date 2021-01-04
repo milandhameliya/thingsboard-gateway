@@ -26,6 +26,7 @@ from bluepy.btle import BTLEDisconnectError, BTLEManagementError, BTLEGattError
 
 from thingsboard_gateway.connectors.connector import Connector, log
 from thingsboard_gateway.connectors.ble.bytes_ble_uplink_converter import BytesBLEUplinkConverter
+from thingsboard_gateway.connectors.ble.ble_storage_helper import BLEStorageHelper
 from thingsboard_gateway.tb_utility.tb_utility import TBUtility
 
 
@@ -40,6 +41,7 @@ class BLEConnector(Connector, Thread):
         self.__config = config
         self.setName(self.__config.get("name",
                                        'BLE Connector ' + ''.join(choice(ascii_lowercase) for _ in range(5))))
+        self.__storage = BLEStorageHelper()
 
         self._connected = False
         self.__stopped = False
@@ -268,18 +270,36 @@ class BLEConnector(Connector, Thread):
                         log.debug('New device %s - processing.', device)
                         self.__devices_around[device]['is_new_device'] = False
                         self.__new_device_processing(device)
+                        self.__storage.clear(self.__devices_around[device]['device_config'])
+                        for interest_char in self.__devices_around[device]['interest_uuid']:
+                            for section in self.__devices_around[device]['interest_uuid'][interest_char]:
+                                if section['section_config'].get('onceOnConnect') is True:
+                                    data = self.__service_processing(device, section['section_config'])
+                                    converter = section['converter']
+                                    converted_data = converter.convert(section, data)
+                                    self.statistics['MessagesReceived'] = self.statistics['MessagesReceived'] + 1
+                                    if converted_data is not None:
+                                        self.__storage.update(section, converted_data)
+                        if not self.__storage.is_empty():
+                            log.debug("Sending data to storage: %s", self.__storage.get())
+                            self.__gateway.send_to_storage(self.get_name(), self.__storage.get())
+                            self.statistics['MessagesSent'] = self.statistics['MessagesSent'] + 1
+
+                    self.__storage.clear(self.__devices_around[device]['device_config'])
                     for interest_char in self.__devices_around[device]['interest_uuid']:
                         for section in self.__devices_around[device]['interest_uuid'][interest_char]:
-                            data = self.__service_processing(device, section['section_config'])
-                            converter = section['converter']
-                            converted_data = converter.convert(section, data)
-                            self.statistics['MessagesReceived'] = self.statistics['MessagesReceived'] + 1
-                            # log.debug('Received data for charactoristic {' + interest_char + '}:')
-                            log.debug(data)
-                            # log.debug('Converted data:')
-                            log.debug(converted_data)
-                            self.__gateway.send_to_storage(self.get_name(), converted_data)
-                            self.statistics['MessagesSent'] = self.statistics['MessagesSent'] + 1
+                            if section['section_config'].get('onceOnConnect') is not True:
+                                data = self.__service_processing(device, section['section_config'])
+                                converter = section['converter']
+                                converted_data = converter.convert(section, data)
+                                self.statistics['MessagesReceived'] = self.statistics['MessagesReceived'] + 1
+                                if converted_data is not None:
+                                    self.__storage.update(section, converted_data)
+
+                    if not self.__storage.is_empty():
+                        log.debug("Sending data to storage: %s", self.__storage.get())
+                        self.__gateway.send_to_storage(self.get_name(), self.__storage.get())
+                        self.statistics['MessagesSent'] = self.statistics['MessagesSent'] + 1
 
                     if self.__disconnect_after_use and peripheral is not None:
                         log.debug('Disconnecting ' + device)
@@ -299,8 +319,9 @@ class BLEConnector(Connector, Thread):
         default_services_on_device = [service for service in self.__devices_around[device]['services'].keys() if
                                       int(service.split('-')[0], 16) in self.__default_services]
         log.debug('Default services found on device %s :%s', device, default_services_on_device)
-        converter = BytesBLEUplinkConverter(self.__devices_around[device]['device_config'])
+        converter = BytesBLEUplinkConverter()
         converted_data = None
+        self.__storage.clear(self.__devices_around[device]['device_config'])
         for service in default_services_on_device:
             characteristics = [char for char in self.__devices_around[device]['services'][service].keys() if
                                self.__devices_around[device]['services'][service][char][
@@ -317,13 +338,13 @@ class BLEConnector(Connector, Thread):
                     read_config['byteFrom'] = 0
                     read_config['byteTo'] = -1
                     converter_config = [{"type": "attributes",
-                                         "clean": False,
                                          "section_config": read_config}]
                     for interest_information in converter_config:
                         try:
                             converted_data = converter.convert(interest_information, data)
                             self.statistics['MessagesReceived'] = self.statistics['MessagesReceived'] + 1
-                            log.debug(converted_data)
+                            if converted_data is not None:
+                                self.__storage.update(interest_information, converted_data)
                         except Exception as e:
                             log.debug(e)
                 except Exception as e:
@@ -331,7 +352,8 @@ class BLEConnector(Connector, Thread):
                     continue
         if converted_data is not None:
             # self.__gateway.add_device(converted_data["deviceName"], {"connector": self})
-            self.__gateway.send_to_storage(self.get_name(), converted_data)
+            log.debug("Sending data to storage: %s", self.__storage.get())
+            self.__gateway.send_to_storage(self.get_name(), self.__storage.get())
             self.statistics['MessagesSent'] = self.statistics['MessagesSent'] + 1
 
     def __check_and_reconnect(self, device):
@@ -375,7 +397,6 @@ class BLEConnector(Connector, Thread):
                 if characteristic.supportsRead():
                     self.__check_and_reconnect(device)
                     data = characteristic.read()
-                    log.debug(data)
                 else:
                     log.error('This characteristic doesn\'t support "READ" method.')
             if characteristic_processing_conf.get('method', '_').upper().split()[0] == "NOTIFY":
@@ -490,7 +511,7 @@ class BLEConnector(Connector, Thread):
         for interest_device in self.__config.get('devices'):
             keys_in_config = ['attributes', 'telemetry']
             if interest_device.get('MACAddress') is not None:
-                default_converter = BytesBLEUplinkConverter(interest_device)
+                default_converter = BytesBLEUplinkConverter()
                 interest_uuid = {}
                 for key_type in keys_in_config:
                     for type_section in interest_device.get(key_type):
@@ -504,7 +525,7 @@ class BLEConnector(Connector, Thread):
                                     if module is not None:
                                         log.debug('Custom converter for device %s - found!',
                                                   interest_device['MACAddress'])
-                                        converter = module(interest_device)
+                                        converter = module()
                                     else:
                                         log.error(
                                             "\n\nCannot find extension module for device %s .\nPlease check your configuration.\n",

@@ -24,26 +24,18 @@
 #     See the License for the specific language governing permissions and
 #     limitations under the License.
 
-from pprint import pprint
+from pprint import pformat
 import struct
 
 from thingsboard_gateway.connectors.ble.ble_uplink_converter import BLEUplinkConverter, log
 
 
 class Ieee754BLEUplinkConverter(BLEUplinkConverter):
-    def __init__(self, config):
-        self.__config = config
-        self.dict_result = {"deviceName": config.get('name', config['MACAddress']),
-                            "deviceType": config.get('deviceType', 'BLEDevice'),
-                            "telemetry": [],
-                            "attributes": []
-                            }
+    def __init__(self):
+        pass
 
     def convert(self, config, data):
         try:
-            if config.get('clean', True):
-                self.dict_result["telemetry"] = []
-                self.dict_result["attributes"] = []
             try:
                 byte_from = config['section_config'].get('byteFrom')
                 byte_to = config['section_config'].get('byteTo')
@@ -56,6 +48,7 @@ class Ieee754BLEUplinkConverter(BLEUplinkConverter):
                     try:
                         # IEEE754 Floating point value from 32bit
                         converted_data = struct.unpack('<f', converted_data)[0]
+                        log.debug('data: %s', converted_data)
                     except:
                         converted_data = None
                         str_bytes = [] # Prepare hex-bytes in string format for logging
@@ -63,10 +56,7 @@ class Ieee754BLEUplinkConverter(BLEUplinkConverter):
                             str_bytes.append(format(byte, "02X"))
                         log.debug('Unable to convert into Float value. Received data = hex[' + " ".join(str_bytes) + ']')
 
-                    if config['section_config'].get('key') is not None:
-                        self.dict_result[config['type']].append({config['section_config'].get('key'): converted_data})
-                    else:
-                        log.error('Key for %s not found in config: %s', config['type'], config['section_config'])
+                    return converted_data
                 except Exception as e:
                     log.error('\nException catched when processing data for %s\n\n', pformat(config))
                     log.exception(e)
@@ -74,5 +64,4 @@ class Ieee754BLEUplinkConverter(BLEUplinkConverter):
                 log.exception(e)
         except Exception as e:
             log.exception(e)
-        log.debug(self.dict_result)
-        return self.dict_result
+        return None
