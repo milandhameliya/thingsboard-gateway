@@ -48,7 +48,7 @@ class Ieee754BLEUplinkConverter(BLEUplinkConverter):
                     try:
                         # IEEE754 Floating point value from 32bit
                         converted_data = struct.unpack('<f', converted_data)[0]
-                        log.debug('data: %s', converted_data)
+                        log.debug('converted_data: %s', converted_data)
                     except:
                         converted_data = None
                         str_bytes = [] # Prepare hex-bytes in string format for logging

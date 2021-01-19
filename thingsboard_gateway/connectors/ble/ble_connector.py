@@ -15,6 +15,7 @@
 import time
 import subprocess
 import sys
+import simplejson
 from random import choice
 from pprint import pformat
 from threading import Thread
@@ -55,6 +56,8 @@ class BLEConnector(Connector, Thread):
             'disconnectBeforeScan') is not None else False
         self.__disconnect_safe_wait = self.__config['disconnectSafeWaitSeconds'] if self.__config.get(
             'disconnectSafeWaitSeconds') is not None else 0
+        self.__filepath_scanned_device_list = self.__config['scannedDeviceListFilepath'] if self.__config.get(
+            'scannedDeviceListFilepath') is not None else None
         self.__previous_scan_time = time.time() - self.__rescan_time
         self.__previous_read_time = time.time() - self.__check_interval_seconds
         self.__scanner = Scanner().withDelegate(ScanDelegate(self))
@@ -290,11 +293,12 @@ class BLEConnector(Connector, Thread):
                         for section in self.__devices_around[device]['interest_uuid'][interest_char]:
                             if section['section_config'].get('onceOnConnect') is not True:
                                 data = self.__service_processing(device, section['section_config'])
-                                converter = section['converter']
-                                converted_data = converter.convert(section, data)
-                                self.statistics['MessagesReceived'] = self.statistics['MessagesReceived'] + 1
-                                if converted_data is not None:
-                                    self.__storage.update(section, converted_data)
+                                if data is not None:
+                                    converter = section['converter']
+                                    converted_data = converter.convert(section, data)
+                                    self.statistics['MessagesReceived'] = self.statistics['MessagesReceived'] + 1
+                                    if converted_data is not None:
+                                        self.__storage.update(section, converted_data)
 
                     if not self.__storage.is_empty():
                         log.debug("Sending data to storage: %s", self.__storage.get())
@@ -428,6 +432,8 @@ class BLEConnector(Connector, Thread):
             else:
                 log.debug('data: %s', data)
             return data
+        log.error('Characteristic [%s] not found', characteristic_uuid_from_config)
+        return None
 
     def __reset_hardware(self):
         if not sys.platform.startswith('linux'):
@@ -502,6 +508,23 @@ class BLEConnector(Connector, Thread):
         except Exception as e:
             log.exception(e)
             self.__reset_hardware()
+        self.__write_scanned_device_list()
+
+    def __write_scanned_device_list(self):
+        if self.__filepath_scanned_device_list is not None:
+            lst_scanned_devices = []
+            log.debug("Writing scanned-device list to '" + self.__filepath_scanned_device_list + "'")
+            try:
+                for device in self.__devices_around:
+                    # interest_device = self.__devices_around.get(device)
+                    lst_scanned_devices.append({"mac": device})
+                str_json = simplejson.dumps(lst_scanned_devices, sort_keys=True, indent=2)
+                with open(self.__filepath_scanned_device_list, 'w') as file_json:
+                    file_json.write(str_json)
+            except Exception as e:
+                log.warn("Failed writing scanned-device list to json file")
+                log.exception(e)
+
 
     def __fill_interest_devices(self):
         if self.__config.get('devices') is None:

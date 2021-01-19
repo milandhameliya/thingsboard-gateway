@@ -47,7 +47,7 @@ class BytesBLEUplinkConverter(BLEUplinkConverter):
                         converted_data = converted_data.replace(b"\x00", b'').decode('UTF-8')
                     except UnicodeDecodeError:
                         converted_data = str(converted_data)
-                    log.debug('data: %s', converted_data)
+                    log.debug('converted_data: %s', converted_data)
                     return converted_data
                 except Exception as e:
                     log.error('\nException catched when processing data for %s\n\n', pformat(config))
