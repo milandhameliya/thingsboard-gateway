@@ -62,6 +62,7 @@ class BLEConnector(Connector, Thread):
         self.__previous_read_time = time.time() - self.__check_interval_seconds
         self.__scanner = Scanner().withDelegate(ScanDelegate(self))
         self.__devices_around = {}
+        self.__devices_scanned = []
         self.__available_converters = []
         self.__notify_delegators = {}
         self.__fill_interest_devices()
@@ -186,6 +187,7 @@ class BLEConnector(Connector, Thread):
 
     def device_add(self, device):
         log.debug('Device with address: %s - found.', device.addr.upper())
+        self.__devices_scanned.append(device)
         for interested_device in self.__devices_around:
             if device.addr.upper() == interested_device and self.__devices_around[interested_device].get(
                     'scanned_device') is None:
@@ -472,6 +474,7 @@ class BLEConnector(Connector, Thread):
             log.debug('No hardware detected!')
 
     def __scan_ble(self):
+        self.__devices_scanned.clear() # clear scanned device list before begin
         if self.__disconnect_before_scan:
             log.debug("Disconnect devices before scanning...")
             disconnect_invoked = False
@@ -515,9 +518,11 @@ class BLEConnector(Connector, Thread):
             lst_scanned_devices = []
             log.debug("Writing scanned-device list to '" + self.__filepath_scanned_device_list + "'")
             try:
-                for device in self.__devices_around:
+                for device in self.__devices_scanned:
                     # interest_device = self.__devices_around.get(device)
-                    lst_scanned_devices.append({"mac": device})
+                    # refer https://www.libelium.com/forum/libelium_files/bt4_core_spec_adv_data_reference.pdf
+                    # refer https://github.com/ARMmbed/ble/blob/master/ble/GapAdvertisingData.h
+                    lst_scanned_devices.append({"short_name": device.getValueText(8),"name": device.getValueText(9),"mac": device.addr.upper(),"rssi": device.rssi})
                 str_json = simplejson.dumps(lst_scanned_devices, sort_keys=True, indent=2)
                 with open(self.__filepath_scanned_device_list, 'w') as file_json:
                     file_json.write(str_json)
