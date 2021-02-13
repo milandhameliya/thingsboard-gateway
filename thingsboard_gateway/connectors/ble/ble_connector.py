@@ -199,7 +199,6 @@ class BLEConnector(Connector, Thread):
             try:
                 if self.__devices_around.get(device) is not None and self.__devices_around[device].get(
                         'scanned_device') is not None:
-                    log.debug('Connecting to device: %s', device)
                     if self.__devices_around[device].get('peripheral') is None:
                         address_type = self.__devices_around[device]['device_config'].get('addrType', "public")
                         peripheral = Peripheral(self.__devices_around[device]['scanned_device'], address_type)
@@ -207,8 +206,9 @@ class BLEConnector(Connector, Thread):
                     else:
                         peripheral = self.__devices_around[device]['peripheral']
                     try:
-                        log.info(peripheral.getState())
+                        peripheral.getState()
                     except BTLEInternalError:
+                        log.info('Connecting to device: %s', device)
                         peripheral.connect(self.__devices_around[device]['scanned_device'])
                     try:
                         services = peripheral.getServices()
@@ -308,17 +308,17 @@ class BLEConnector(Connector, Thread):
                         self.statistics['MessagesSent'] = self.statistics['MessagesSent'] + 1
 
                     if self.__disconnect_after_use and peripheral is not None:
-                        log.debug('Disconnecting ' + device)
+                        log.info('Disconnecting ' + device)
                         try:
                             peripheral.disconnect()
                         except Exception as e:
                             log.debug('Unable to disconnect ' + device)
                             log.exception(e)
 
-            except BTLEDisconnectError:
-                log.debug('Connection lost. Device %s', device)
-                continue
+            except BTLEDisconnectError as e:
+                log.debug('Connection lost. Device %s (or unable to connect)', device)
             except Exception as e:
+                log.debug('Unknown exception reading from Device %s', device)
                 log.exception(e)
 
     def __new_device_processing(self, device):
@@ -365,7 +365,7 @@ class BLEConnector(Connector, Thread):
     def __check_and_reconnect(self, device):
         # pylint: disable=protected-access
         while self.__devices_around[device]['peripheral']._helper is None:
-            log.debug("Connecting to %s...", device)
+            log.info("Connecting to %s...", device)
             self.__devices_around[device]['peripheral'].connect(self.__devices_around[device]['scanned_device'])
 
     def __notify_handler(self, device, notify_handle, delegate=None):
@@ -482,7 +482,7 @@ class BLEConnector(Connector, Thread):
                 if self.__devices_around[device].get('peripheral') is not None:
                     peripheral = self.__devices_around[device]['peripheral']
                     if peripheral is not None:
-                        log.debug('Disconnecting ' + device)
+                        log.info('Disconnecting ' + device)
                         try:
                             peripheral.disconnect()
                             disconnect_invoked = True
@@ -493,25 +493,37 @@ class BLEConnector(Connector, Thread):
                 log.debug('Waiting for %d seconds to disconnect safely...', self.__disconnect_safe_wait)
                 time.sleep(self.__disconnect_safe_wait)
 
-        log.debug("Scanning for devices...")
+        log.info("Scanning for BLE devices...")
         try:
             self.__scanner.scan(self.__config.get('scanTimeSeconds', 5),
                                 passive=self.__config.get('passiveScanMode', False))
+            log.info("Scanning successfully finished")
         except BTLEManagementError as e:
-            log.error('BLE working only with root user.')
-            log.error('Or you can try this command:\nsudo setcap '
+            log.debug('BLE working only with root user.')
+            log.debug('Or you can try this command:\nsudo setcap '
                       '\'cap_net_raw,cap_net_admin+eip\' %s'
                       '\n====== Attention! ====== '
                       '\nCommand above - provided access to ble devices to any user.'
                       '\n========================', str(bluepy_path[0] + '/bluepy-helper'))
             self._connected = False
-            log.error("Unable to scan devices. Further operations may fail. Try to restart or reconnect your BLE hardware.")
+            log.debug("Unable to scan devices. Further operations may fail. Try to restart or reconnect your BLE hardware.")
+            log.info("Scanning not finished successfully")
             self.__reset_hardware()
             # raise e # Don't raise exception to avoid permanent blocking of the system!
         except Exception as e:
             log.exception(e)
+            log.info("Scanning not finished successfully")
             self.__reset_hardware()
         self.__write_scanned_device_list()
+        # FIXME: Huge number of nearby ble devices might got timeout even earliar than
+        #        some really present device being scanned.
+        #        In that case system never connect to such device - which is wrong.
+        #        So lets keep this scaning process just to list out found devices only.
+        #        And later on try to connect all listed device to really see if it found or not.
+        for device in self.__devices_around:
+            if self.__devices_around[device].get('scanned_device') is None:
+                self.__devices_around[device]['scanned_device'] = device
+                self.__devices_around[device]['is_new_device'] = True
 
     def __write_scanned_device_list(self):
         if self.__filepath_scanned_device_list is not None:
