@@ -75,6 +75,7 @@ class ModbusConnector(Connector, threading.Thread):
     def run(self):
         self.__connect_to_current_master()
         self.__connected = True
+        self.__valid_response_found = False
         self.__next_time = time.time() + self.__reconnect_on_failure_interval
 
         while True:
