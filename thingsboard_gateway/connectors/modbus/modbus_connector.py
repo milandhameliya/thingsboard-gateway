@@ -32,6 +32,7 @@ from pymodbus.bit_write_message import WriteSingleCoilResponse, WriteMultipleCoi
 from pymodbus.register_write_message import WriteMultipleRegistersResponse, \
                                             WriteSingleRegisterResponse
 from pymodbus.register_read_message import ReadRegistersResponseBase
+from pymodbus.pdu import ModbusResponse
 from pymodbus.bit_read_message import ReadBitsResponseBase
 from pymodbus.exceptions import ConnectionException
 
@@ -52,6 +53,8 @@ class ModbusConnector(Connector, threading.Thread):
         self.__default_config_parameters = ['host', 'port', 'baudrate', 'timeout', 'method', 'stopbits', 'bytesize', 'parity', 'strict', 'type']
         self.__byte_order = self.__config.get("byteOrder")
         self.__word_order = self.__config.get("wordOrder")
+        self.__reconnect_on_failure_interval = self.__config['reconnectOnFailureInterval'] if self.__config.get(
+            'reconnectOnFailureInterval') is not None else 10
         self.__configure_master()
         self.__devices = {}
         self.setName(self.__config.get("name",
@@ -72,10 +75,22 @@ class ModbusConnector(Connector, threading.Thread):
     def run(self):
         self.__connect_to_current_master()
         self.__connected = True
+        self.__next_time = time.time() + self.__reconnect_on_failure_interval
 
         while True:
             time.sleep(.01)
             self.__process_devices()
+            if self.__next_time is None or time.time() >= self.__next_time:
+                try:
+                    if self.__valid_response_found is None or not self.__valid_response_found:
+                        log.info("--------------------------- Reconnecting due to all invalid responses --------------------------- ")
+                        self.__stop_connections_to_masters()
+                        time.sleep(.1)
+                        self.__connect_to_current_master()
+                except Exception as e:
+                    log.exception(e)
+                self.__next_time = time.time() + self.__reconnect_on_failure_interval
+                self.__valid_response_found = False
             if self.__stopped:
                 break
 
@@ -134,6 +149,8 @@ class ModbusConnector(Connector, threading.Thread):
                                 # if not isinstance(input_data, ReadRegistersResponseBase) and input_data.isError():
                                 #     log.exception(input_data)
                                 #     continue
+                                if isinstance(input_data, ModbusResponse) and not input_data.isError():
+                                    self.__valid_response_found = True
                                 device_responses[config_data][current_data["tag"]] = {"data_sent": current_data,
                                                                                       "input_data": input_data}
 
