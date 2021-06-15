@@ -56,10 +56,15 @@ class BLEConnector(Connector, Thread):
             'disconnectBeforeScan') is not None else False
         self.__disconnect_safe_wait = self.__config['disconnectSafeWaitSeconds'] if self.__config.get(
             'disconnectSafeWaitSeconds') is not None else 0
+        self.__reboot_if_no_data_since_seconds = self.__config['rebootIfNoDataSinceSeconds'] if self.__config.get(
+            'rebootIfNoDataSinceSeconds') is not None else 0
         self.__filepath_scanned_device_list = self.__config['scannedDeviceListFilepath'] if self.__config.get(
             'scannedDeviceListFilepath') is not None else None
+        self.__rssi_as_telemetry = self.__config['rssiAsTelemetry'] if self.__config.get(
+            'rssiAsTelemetry') is not None else None
         self.__previous_scan_time = time.time() - self.__rescan_time
         self.__previous_read_time = time.time() - self.__check_interval_seconds
+        self.__previous_send_data_time = time.time()
         self.__scanner = Scanner().withDelegate(ScanDelegate(self))
         self.__devices_around = {}
         self.__devices_scanned = []
@@ -77,6 +82,10 @@ class BLEConnector(Connector, Thread):
             if time.time() - self.__previous_read_time >= self.__check_interval_seconds:
                 self.__get_services_and_chars()
                 self.__previous_read_time = time.time()
+
+            if self.__reboot_if_no_data_since_seconds > 0:
+                if time.time() - self.__previous_send_data_time >= self.__reboot_if_no_data_since_seconds:
+                    self.__perform_system_reboot()
 
             time.sleep(.1)
             if self.__stopped:
@@ -189,10 +198,11 @@ class BLEConnector(Connector, Thread):
         log.debug('Device with address: %s - found.', device.addr.upper())
         self.__devices_scanned.append(device)
         for interested_device in self.__devices_around:
-            if device.addr.upper() == interested_device and self.__devices_around[interested_device].get(
-                    'scanned_device') is None:
+            if device.addr.upper() == interested_device:
+                if self.__devices_around[interested_device].get('scanned_device') is None:
+                    self.__devices_around[interested_device]['is_new_device'] = True
                 self.__devices_around[interested_device]['scanned_device'] = device
-                self.__devices_around[interested_device]['is_new_device'] = True
+                self.__devices_around[interested_device]['is_new_rssi'] = True
 
     def __get_services_and_chars(self):
         for device in self.__devices_around:
@@ -289,6 +299,7 @@ class BLEConnector(Connector, Thread):
                             log.debug("Sending data to storage: %s", self.__storage.get())
                             self.__gateway.send_to_storage(self.get_name(), self.__storage.get())
                             self.statistics['MessagesSent'] = self.statistics['MessagesSent'] + 1
+                            self.__previous_send_data_time = time.time()
 
                     self.__storage.clear(self.__devices_around[device]['device_config'])
                     for interest_char in self.__devices_around[device]['interest_uuid']:
@@ -302,10 +313,15 @@ class BLEConnector(Connector, Thread):
                                     if converted_data is not None:
                                         self.__storage.update(section, converted_data)
 
+                    if not self.__storage.is_empty() and self.__rssi_as_telemetry is not None:
+                        if self.__devices_around[device]['is_new_rssi']: # Recording RSSI of the device
+                            self.__storage.update_telemetry(self.__rssi_as_telemetry, self.__devices_around[device]['scanned_device'].rssi)
+                            self.__devices_around[device]['is_new_rssi'] = False
                     if not self.__storage.is_empty():
                         log.debug("Sending data to storage: %s", self.__storage.get())
                         self.__gateway.send_to_storage(self.get_name(), self.__storage.get())
                         self.statistics['MessagesSent'] = self.statistics['MessagesSent'] + 1
+                        self.__previous_send_data_time = time.time()
 
                     if self.__disconnect_after_use and peripheral is not None:
                         log.info('Disconnecting ' + device)
@@ -350,17 +366,21 @@ class BLEConnector(Connector, Thread):
                             converted_data = converter.convert(interest_information, data)
                             self.statistics['MessagesReceived'] = self.statistics['MessagesReceived'] + 1
                             if converted_data is not None:
+                                # log.debug("Storage updating \n%s \n%s",
+                                #     simplejson.dumps(interest_information, sort_keys=True, indent=2),
+                                #     simplejson.dumps(converted_data, sort_keys=True, indent=2))
                                 self.__storage.update(interest_information, converted_data)
                         except Exception as e:
                             log.debug(e)
                 except Exception as e:
                     log.debug('Cannot process %s', e)
                     continue
-        if converted_data is not None:
+        if not self.__storage.is_empty():
             # self.__gateway.add_device(converted_data["deviceName"], {"connector": self})
             log.debug("Sending data to storage: %s", self.__storage.get())
             self.__gateway.send_to_storage(self.get_name(), self.__storage.get())
             self.statistics['MessagesSent'] = self.statistics['MessagesSent'] + 1
+            self.__previous_send_data_time = time.time()
 
     def __check_and_reconnect(self, device):
         # pylint: disable=protected-access
@@ -508,12 +528,14 @@ class BLEConnector(Connector, Thread):
             self._connected = False
             log.debug("Unable to scan devices. Further operations may fail. Try to restart or reconnect your BLE hardware.")
             log.info("Scanning not finished successfully")
-            self.__reset_hardware()
+            if len(self.__devices_scanned) <= 0:
+                self.__reset_hardware()
             # raise e # Don't raise exception to avoid permanent blocking of the system!
         except Exception as e:
             log.exception(e)
             log.info("Scanning not finished successfully")
-            self.__reset_hardware()
+            if len(self.__devices_scanned) <= 0:
+                self.__reset_hardware()
         self.__write_scanned_device_list()
         # FIXME: Huge number of nearby ble devices might got timeout even earliar than
         #        some really present device being scanned.
@@ -594,6 +616,14 @@ class BLEConnector(Connector, Thread):
                 self.__devices_around[interest_device['MACAddress'].upper()]['interest_uuid'] = interest_uuid
             else:
                 log.error("Device address not found, please check your settings.")
+
+    def __perform_system_reboot(self):
+        try:
+            log.info('Performing system reboot...')
+            reset_output = subprocess.check_output(['sudo', 'reboot'], timeout=2, encoding='ascii')
+        except Exception as e:
+            log.error('Failed to perform system reboot!')
+            log.exception(e)
 
 
 class ScanDelegate(DefaultDelegate):

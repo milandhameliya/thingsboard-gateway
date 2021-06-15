@@ -50,3 +50,21 @@ class BLEStorageHelper():
                 log.error('Key for %s not found in config: %s', config['type'], config['section_config'])
         else:
             log.error("Given type '%s' not valid for storage", config['type'])
+
+    def update_attribute(self, key, data):
+        if self.dict_result.get("attributes") is not None:
+            if key is not None:
+                self.dict_result["attributes"].append({key: data})
+            else:
+                log.error('Key for %s not found for attribute', key)
+        else:
+            log.error("Given attribute not valid for storage", type)
+
+    def update_telemetry(self, key, data):
+        if self.dict_result.get("telemetry") is not None:
+            if key is not None:
+                self.dict_result["telemetry"].append({key: data})
+            else:
+                log.error('Key for %s not found for telemetry', key)
+        else:
+            log.error("Given telemetry not valid for storage", type)
